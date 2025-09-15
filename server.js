@@ -170,21 +170,6 @@ app.get("/search",(req,res)=>{ const q=String(req.query.matricula||"").toUpperCa
   const db=dbConn(); const p=db.prepare("SELECT * FROM players WHERE matricula=?").get(q);
   if(!p) return res.status(404).json({error:"No existe esa matrícula"}); res.json({ok:true,matricula:q});
 });
-// --- RANKING (público) ---
-app.get('/ranking', async (req, res) => {
-  try {
-    const category = req.query.category || 'Global';
-    const limit = Math.min(parseInt(req.query.limit || '10', 10), 50);
-    const offset = parseInt(req.query.offset || '0', 10);
-
-    // TODO: Sustituir por consulta real a la BD
-    const items = []; // vacío por ahora, solo para probar
-
-    res.json({ items, category, limit, offset });
-  } catch (e) {
-    res.status(500).json({ error: 'ranking_failed' });
-  }
-});
 
 // Health
 app.get("/",(_req,res)=>res.json({ok:true,time:new Date().toISOString()}));
