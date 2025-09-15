@@ -115,19 +115,36 @@ app.post("/reports",(req,res)=>{ const { post_id, reporter_matricula }=req.body|
   res.json({ok:true,reports:c});
 });
 
-// Ranking categoría
-app.get("/ranking/:category",(req,res)=>{
-  const cat=req.params.category; const scope=(req.query.scope||"global"); const viewer=(req.query.viewer||"").toUpperCase();
-  if(!safeCats.includes(cat)) return res.status(400).json({error:"Categoría inválida"});
-  const db=dbConn(); const rows=db.prepare("SELECT player_matricula, SUM(points) pts, COUNT(*) cnt FROM matches WHERE category=? GROUP BY player_matricula").all(cat);
-  const getP=db.prepare("SELECT * FROM players WHERE matricula=?"); let friends=new Set();
-  if(scope==="friends"&&MAT.test(viewer)){ const list=db.prepare("SELECT target_matricula FROM friendships WHERE follower_matricula=?").all(viewer); friends=new Set(list.map(x=>x.target_matricula)); }
-  const result=rows.map(r=>{ const p=getP.get(r.player_matricula); const social=p?.social_points??0; const cats=p?.categories?JSON.parse(p.categories):[];
-    return { matricula:r.player_matricula, username:p?.username||r.player_matricula, categories:cats, puntos:Number(r.pts)+Number(social), partidos:Number(r.cnt) }; })
-    .filter(r=>scope==="global"?true:friends.has(r.matricula))
-    .sort((a,b)=>(b.puntos-a.puntos)||(b.partidos-a.partidos));
-  res.json(result);
+// --- RANKING global ---
+app.get('/ranking', (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '20', 10), 50);
+    const offset = parseInt(req.query.offset || '0', 10);
+
+    const db = dbConn();
+    const stmt = db.prepare(`
+      SELECT 
+        matricula                AS matricula,
+        username                 AS username,
+        COALESCE(points,   0)    AS points,
+        COALESCE(posts,    0)    AS posts,
+        COALESCE(ciertos,  0)    AS ciertos,
+        COALESCE(falsos,   0)    AS falsos,
+        COALESCE(comments, 0)    AS comments
+      FROM players
+      ORDER BY points DESC
+      LIMIT ? OFFSET ?
+    `);
+
+    const items = stmt.all(limit, offset);
+
+    res.json({ items, limit, offset });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'ranking_failed' });
+  }
 });
+
 
 // Search
 app.get("/search",(req,res)=>{ const q=String(req.query.matricula||"").toUpperCase().trim();
