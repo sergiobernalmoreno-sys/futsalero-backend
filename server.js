@@ -146,6 +146,7 @@ app.get('/ranking', (req, res) => {
 });
 
 
+
 // Search
 app.get("/search",(req,res)=>{ const q=String(req.query.matricula||"").toUpperCase().trim();
   if(!MAT.test(q)) return res.status(400).json({error:"Formato AAA1234"});
