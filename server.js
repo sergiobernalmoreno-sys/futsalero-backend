@@ -115,7 +115,7 @@ app.post("/reports",(req,res)=>{ const { post_id, reporter_matricula }=req.body|
   res.json({ok:true,reports:c});
 });
 
-// --- RANKING (global, público) — parche estable ---
+// --- RANKING (global, público) — versión simple y estable ---
 app.get('/ranking', (req, res) => {
   try {
     const limit  = Math.min(parseInt(req.query.limit  || '20', 10), 50);
@@ -123,17 +123,12 @@ app.get('/ranking', (req, res) => {
 
     const db = dbConn();
 
-    // Consulta mínima que siempre funciona aunque falten columnas
-    const rows = db.prepare(`
-      SELECT 
-        matricula,
-        username
-      FROM players
-      ORDER BY rowid DESC
-      LIMIT ? OFFSET ?
-    `).all(limit, offset);
+    const stmt = db.prepare(
+      'SELECT matricula, username FROM players ORDER BY rowid DESC LIMIT ? OFFSET ?'
+    );
+    const rows = stmt.all(limit, offset);
 
-    // Adaptamos al formato que espera el front
+    // Formato que espera el front
     const items = rows.map(r => ({
       matricula: r.matricula,
       username: r.username,
@@ -143,6 +138,13 @@ app.get('/ranking', (req, res) => {
       falsos: 0,
       comments: 0,
     }));
+
+    res.json({ items, limit, offset });
+  } catch (e) {
+    console.error('ranking error:', e);
+    res.status(500).json({ error: 'ranking_failed' });
+  }
+});
 
     res.json({ items, limit, offset });
   } catch (e) {
