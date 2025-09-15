@@ -119,10 +119,9 @@ app.post("/reports",(req,res)=>{ const { post_id, reporter_matricula }=req.body|
 app.get('/ranking', (req, res) => {
   try {
     const limit  = Math.min(parseInt(req.query.limit  || '20', 10), 50);
-    const offset =        parseInt(req.query.offset || '0',  10);
+    const offset = parseInt(req.query.offset || '0', 10);
 
     const db = dbConn();
-
     const stmt = db.prepare(
       'SELECT matricula, username FROM players ORDER BY rowid DESC LIMIT ? OFFSET ?'
     );
@@ -131,12 +130,12 @@ app.get('/ranking', (req, res) => {
     // Formato que espera el front
     const items = rows.map(r => ({
       matricula: r.matricula,
-      username: r.username,
-      points: 0,
-      posts: 0,
-      ciertos: 0,
-      falsos: 0,
-      comments: 0,
+      username:  r.username,
+      points:    0,
+      posts:     0,
+      ciertos:   0,
+      falsos:    0,
+      comments:  0,
     }));
 
     res.json({ items, limit, offset });
@@ -145,24 +144,6 @@ app.get('/ranking', (req, res) => {
     res.status(500).json({ error: 'ranking_failed' });
   }
 });
-
-    res.json({ items, limit, offset });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'ranking_failed' });
-  }
-});
-
-
-    const items = stmt.all(limit, offset);
-
-    res.json({ items, limit, offset });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'ranking_failed' });
-  }
-});
-
 
 // Search
 app.get("/search",(req,res)=>{ const q=String(req.query.matricula||"").toUpperCase().trim();
