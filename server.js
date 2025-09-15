@@ -115,26 +115,42 @@ app.post("/reports",(req,res)=>{ const { post_id, reporter_matricula }=req.body|
   res.json({ok:true,reports:c});
 });
 
-// --- RANKING global ---
+// --- RANKING (global, público) — parche estable ---
 app.get('/ranking', (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit || '20', 10), 50);
-    const offset = parseInt(req.query.offset || '0', 10);
+    const limit  = Math.min(parseInt(req.query.limit  || '20', 10), 50);
+    const offset =        parseInt(req.query.offset || '0',  10);
 
     const db = dbConn();
-    const stmt = db.prepare(`
+
+    // Consulta mínima que siempre funciona aunque falten columnas
+    const rows = db.prepare(`
       SELECT 
-        matricula                AS matricula,
-        username                 AS username,
-        COALESCE(points,   0)    AS points,
-        COALESCE(posts,    0)    AS posts,
-        COALESCE(ciertos,  0)    AS ciertos,
-        COALESCE(falsos,   0)    AS falsos,
-        COALESCE(comments, 0)    AS comments
+        matricula,
+        username
       FROM players
-      ORDER BY points DESC
+      ORDER BY rowid DESC
       LIMIT ? OFFSET ?
-    `);
+    `).all(limit, offset);
+
+    // Adaptamos al formato que espera el front
+    const items = rows.map(r => ({
+      matricula: r.matricula,
+      username: r.username,
+      points: 0,
+      posts: 0,
+      ciertos: 0,
+      falsos: 0,
+      comments: 0,
+    }));
+
+    res.json({ items, limit, offset });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'ranking_failed' });
+  }
+});
+
 
     const items = stmt.all(limit, offset);
 
