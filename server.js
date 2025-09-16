@@ -1,83 +1,89 @@
+// server.js
 import express from "express";
 import cors from "cors";
 import Database from "better-sqlite3";
 import fs from "fs";
 
+// -------------------- CONFIG --------------------
 const DB_PATH = process.env.DB_PATH || "/data/futsalero.db";
 const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "*";
-const MAT = /^[A-Z]{3}\d{4}$/;
+const MAT = /^[A-Z]{3}\d{4}$/; // AAA1234
 
 const app = express();
-app.use(cors({ origin: ALLOW_ORIGIN.split(","), credentials: false }));
+app.use(
+  cors({
+    origin: ALLOW_ORIGIN.split(","),
+    credentials: false,
+  })
+);
 app.use(express.json());
 
-function dbConn() { const db = new Database(DB_PATH); db.pragma("journal_mode = WAL"); return db; }
+// Helpers de tiempo / categorías (si las necesitas)
 const nowISO = () => new Date().toISOString();
-const safeCats = ["LOCAL","PROVINCIAL","AUTONOMICA","3_DIVISION","2_DIVISION_B","2_DIVISION","PRIMERA_DIVISION","SELECCION_ESPAÑOLA"];
+const safeCats = [
+  "LOCAL",
+  "PROVINCIAL",
+  "AUTONOMICA",
+  "3_DIVISION",
+  "2_DIVISION_B",
+  "2_DIVISION",
+  "PRIMERA_DIVISION",
+  "SELECCION_ESPANOLA",
+];
 
-// --- helper para generar matrículas tipo AAA1234 ---
-function genMatricula() {
-  const letras = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  const pick = (n, s) => Array.from({ length: n }, () => s[Math.floor(Math.random() * s.length)]).join("");
-  return pick(3, letras) + String(Math.floor(1000 + Math.random() * 9000));
+// Conexión a BD (WAL para concurrencia)
+function dbConn() {
+  const db = new Database(DB_PATH);
+  db.pragma("journal_mode = WAL");
+  return db;
 }
 
-
+// --- Inicializar BD desde schema.sql (solo si ejecutas con --init) ---
 if (process.argv.includes("--init")) {
-  const db = dbConn(); const schema = fs.readFileSync("./schema.sql","utf8"); db.exec(schema);
-  console.log("DB inicializada ✅"); process.exit(0);
+  const db = dbConn();
+  const schema = fs.readFileSync("./schema.sql", "utf8");
+  db.exec(schema);
+  console.log("BD inicializada ✅");
+  process.exit(0);
 }
 
-// Players
-app.post("/players/sync",(req,res)=>{
-  const { matricula, username, categories } = req.body||{};
-  if(!matricula||!MAT.test(matricula)) return res.status(400).json({error:"Matrícula inválida"});
-  const db=dbConn(); const get=db.prepare("SELECT * FROM players WHERE matricula=?").get(matricula);
-  const cats=JSON.stringify(Array.isArray(categories)?categories:[]);
-  if(get){ db.prepare("UPDATE players SET username=?, categories=? WHERE id=?").run(username||get.username||matricula,cats,get.id); res.json({ok:true,id:get.id}); }
-  else { const info=db.prepare("INSERT INTO players(matricula,username,categories) VALUES(?,?,?)").run(matricula,username||matricula,cats); res.json({ok:true,id:info.lastInsertRowid}); }
-});
-app.get("/players/:matricula",(req,res)=>{ const m=(req.params.matricula||"").toUpperCase();
-  const db=dbConn(); const p=db.prepare("SELECT * FROM players WHERE matricula=?").get(m);
-  if(!p) return res.status(404).json({error:"No existe"}); p.categories=JSON.parse(p.categories||"[]"); res.json(p);
-});
+// -------------------- MATRÍCULAS --------------------
+// Genera AAA1234
+function genMatricula() {
+  const L = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const pick = (n, s) =>
+    Array.from({ length: n }, () => s[Math.floor(Math.random() * s.length)]).join("");
+  return pick(3, L) + String(Math.floor(1000 + Math.random() * 9000));
+}
 
-// --- Registro inicial: crea perfil + matrícula única ---
+// Garantiza unicidad contra la BD
+function genUniqueMatricula(db) {
+  for (let i = 0; i < 50; i++) {
+    const m = genMatricula();
+    const exists = db.prepare("SELECT 1 FROM players WHERE matricula = ?").get(m);
+    if (!exists) return m;
+  }
+  throw new Error("no_unique_matricula");
+}
+
+// -------------------- ENDPOINTS --------------------
+
+// Registro inicial desde la UI (“Soy Jugador” / “Soy Fan”)
+// Crea fila en players con matrícula única y rol.
 app.post("/register", (req, res) => {
   try {
-    const { role, username = "" } = req.body || {};
-    const valid = role === "player" || role === "fan";
-    if (!valid) return res.status(400).json({ error: "invalid_role" });
+    const { role, username } = req.body || {};
+    if (!role || !["player", "fan"].includes(role)) {
+      return res.status(400).json({ error: "rol_invalido" });
+    }
 
     const db = dbConn();
+    const matricula = genUniqueMatricula(db);
 
-    // Tabla de rol (no rompe si ya existe)
-    db.exec(
-      'CREATE TABLE IF NOT EXISTS user_roles (' +
-      ' matricula TEXT PRIMARY KEY,' +
-      ' role TEXT CHECK(role IN ("player","fan"))' +
-      ')'
-    );
-
-    // Generar matrícula única
-    let matricula, exists, tries = 0;
-    do {
-      matricula = genMatricula(); // usa el helper del Paso 1
-      exists = db.prepare("SELECT 1 FROM players WHERE matricula=?").get(matricula);
-    } while (exists && ++tries < 25);
-
-    if (exists) return res.status(500).json({ error: "matricula_collision" });
-
-    // Crear jugador base (sin categorías al inicio)
-    const cats = JSON.stringify([]);
     db.prepare(
-      "INSERT INTO players(matricula, username, categories) VALUES (?,?,?)"
-    ).run(matricula, username, cats);
-
-    // Guardar rol
-    db.prepare(
-      "INSERT OR REPLACE INTO user_roles(matricula, role) VALUES (?,?)"
-    ).run(matricula, role);
+      `INSERT INTO players (matricula, username, role, created_at)
+       VALUES (?, ?, ?, ?)`
+    ).run(matricula, username || "", role, nowISO());
 
     return res.json({ ok: true, matricula, role });
   } catch (e) {
@@ -86,124 +92,89 @@ app.post("/register", (req, res) => {
   }
 });
 
-// Friendships (+1 social)
-app.post("/friendships",(req,res)=>{
-  const { follower_matricula, target_matricula } = req.body||{};
-  const f=(follower_matricula||"").toUpperCase(), t=(target_matricula||"").toUpperCase();
-  if(!MAT.test(f)||!MAT.test(t)||f===t) return res.status(400).json({error:"Datos inválidos"});
-  const db=dbConn(); try{ db.prepare("INSERT INTO friendships(follower_matricula,target_matricula) VALUES(?,?)").run(f,t); }
-  catch{ return res.json({ok:true,message:"Ya seguía"}); }
-  db.prepare("UPDATE players SET social_points=COALESCE(social_points,0)+1 WHERE matricula=?").run(t); res.json({ok:true});
-});
-
-// Matches
-app.post("/matches",(req,res)=>{
-  const { player_matricula, category, points=0, goals=0, assists=0, is_goalkeeper=false } = req.body||{};
-  const m=(player_matricula||"").toUpperCase(); if(!MAT.test(m)) return res.status(400).json({error:"Matrícula inválida"});
-  if(!safeCats.includes(category)) return res.status(400).json({error:"Categoría inválida"});
-  const db=dbConn(); const info=db.prepare(`
-    INSERT INTO matches(player_matricula,category,points,goals,assists,is_goalkeeper,created_date)
-    VALUES(?,?,?,?,?,?,?)
-  `).run(m,category,Number(points||0),Number(goals||0),Number(assists||0),is_goalkeeper?1:0,nowISO());
-  res.json({ok:true,id:info.lastInsertRowid});
-});
-app.get("/matches",(req,res)=>{
-  const { player_matricula, category, limit=50, offset=0 } = req.query; const db=dbConn();
-  let q="SELECT * FROM matches WHERE 1=1", args=[];
-  if(player_matricula){ q+=" AND player_matricula=?"; args.push(String(player_matricula).toUpperCase()); }
-  if(category){ q+=" AND category=?"; args.push(category); }
-  q+=" ORDER BY datetime(created_date) DESC LIMIT ? OFFSET ?"; args.push(Number(limit),Number(offset));
-  res.json(db.prepare(q).all(...args));
-});
-
-// Posts
-app.post("/posts",(req,res)=>{ const { author_matricula, body="", match_id=null } = req.body||{};
-  const m=(author_matricula||"").toUpperCase(); if(!MAT.test(m)) return res.status(400).json({error:"Matrícula inválida"});
-  const db=dbConn(); const info=db.prepare(`INSERT INTO posts(author_matricula,body,match_id,created_date) VALUES(?,?,?,?)`).run(m,String(body),match_id??null,nowISO());
-  res.json({ok:true,id:info.lastInsertRowid});
-});
-app.get("/posts",(req,res)=>{ const { limit=10, offset=0 }=req.query; const db=dbConn();
-  res.json(db.prepare(`SELECT * FROM posts ORDER BY datetime(created_date) DESC LIMIT ? OFFSET ?`).all(Number(limit),Number(offset)));
-});
-
-// Comments
-app.post("/comments",(req,res)=>{ const { post_id, author_matricula, text }=req.body||{};
-  const m=(author_matricula||"").toUpperCase(); if(!post_id||!text||String(text).trim()==="") return res.status(400).json({error:"Faltan datos"});
-  if(String(text).length>140) return res.status(400).json({error:"Máx 140"}); if(!MAT.test(m)) return res.status(400).json({error:"Matrícula inválida"});
-  const db=dbConn(); const info=db.prepare(`INSERT INTO comments(post_id,author_matricula,text,created_date) VALUES(?,?,?,?)`).run(Number(post_id),m,String(text),nowISO());
-  res.json({ok:true,id:info.lastInsertRowid});
-});
-app.get("/comments",(req,res)=>{ const { post_id }=req.query; if(!post_id) return res.status(400).json({error:"post_id requerido"});
-  const db=dbConn(); res.json(db.prepare("SELECT * FROM comments WHERE post_id=? ORDER BY datetime(created_date) ASC").all(Number(post_id)));
-});
-
-// Votes
-app.post("/votes",(req,res)=>{ const { post_id, voter_matricula, value }=req.body||{};
-  const m=(voter_matricula||"").toUpperCase(); if(!post_id||!MAT.test(m)) return res.status(400).json({error:"Datos inválidos"});
-  const val=(value===true||value===1||value==="true")?1:0; const db=dbConn();
-  const ex=db.prepare("SELECT * FROM votes WHERE post_id=? AND voter_matricula=?").get(Number(post_id),m);
-  if(ex) db.prepare("UPDATE votes SET value=? WHERE id=?").run(val,ex.id); else db.prepare("INSERT INTO votes(post_id,voter_matricula,value) VALUES(?,?,?)").run(Number(post_id),m,val);
-  const t=db.prepare("SELECT COUNT(*) c FROM votes WHERE post_id=? AND value=1").get(Number(post_id)).c;
-  const f=db.prepare("SELECT COUNT(*) c FROM votes WHERE post_id=? AND value=0").get(Number(post_id)).c;
-  res.json({ok:true,trueCount:t,falseCount:f});
-});
-app.get("/votes/counts",(req,res)=>{ const { post_id }=req.query; if(!post_id) return res.status(400).json({error:"post_id requerido"});
-  const db=dbConn(); const t=db.prepare("SELECT COUNT(*) c FROM votes WHERE post_id=? AND value=1").get(Number(post_id)).c;
-  const f=db.prepare("SELECT COUNT(*) c FROM votes WHERE post_id=? AND value=0").get(Number(post_id)).c; res.json({trueCount:t,falseCount:f});
-});
-
-// Reports (auto-delete 30)
-app.post("/reports",(req,res)=>{ const { post_id, reporter_matricula }=req.body||{};
-  const m=(reporter_matricula||"").toUpperCase(); if(!post_id||!MAT.test(m)) return res.status(400).json({error:"Datos inválidos"});
-  const db=dbConn(); try{ db.prepare("INSERT INTO reports(post_id,reporter_matricula,created_date) VALUES(?,?,?)").run(Number(post_id),m,nowISO()); }
-  catch{ return res.json({ok:true,message:"Ya reportado"}); }
-  const c=db.prepare("SELECT COUNT(*) c FROM reports WHERE post_id=?").get(Number(post_id)).c;
-  if(c>=30){ db.prepare("DELETE FROM comments WHERE post_id=?").run(Number(post_id));
-    db.prepare("DELETE FROM votes WHERE post_id=?").run(Number(post_id));
-    db.prepare("DELETE FROM reports WHERE post_id=?").run(Number(post_id));
-    db.prepare("DELETE FROM posts WHERE id=?").run(Number(post_id));
-    return res.json({ok:true,removed:true,reports:c});
-  }
-  res.json({ok:true,reports:c});
-});
-
-// --- RANKING (global, público) — versión simple y estable ---
-app.get('/ranking', (req, res) => {
+// Sincronización por lotes (si ya la utilizabas en el front)
+// Body: { matricula, username, categories }
+// Mantengo validación de matrícula para no romper nada que ya tengas.
+app.post("/players/sync", (req, res) => {
   try {
-    const limit  = Math.min(parseInt(req.query.limit  || '20', 10), 50);
-    const offset = parseInt(req.query.offset || '0', 10);
+    const { matricula, username, categories } = req.body || {};
+    if (!matricula || !MAT.test(matricula)) {
+      return res.status(400).json({ error: "Matricula inválida" });
+    }
+    const db = dbConn();
+
+    const catsJson = JSON.stringify(Array.isArray(categories) ? categories : []);
+    const get = db.prepare("SELECT * FROM players WHERE matricula = ?").get(matricula);
+
+    if (get) {
+      db.prepare(
+        "UPDATE players SET username = ?, categories = ?, updated_at = ? WHERE matricula = ?"
+      ).run(username || "", catsJson, nowISO(), matricula);
+    } else {
+      db.prepare(
+        "INSERT INTO players (matricula, username, categories, created_at) VALUES (?, ?, ?, ?)"
+      ).run(matricula, username || "", catsJson, nowISO());
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("players/sync error:", e);
+    return res.status(500).json({ error: "sync_failed" });
+  }
+});
+
+// Buscar por matrícula exacta (usado por la pantalla “Buscar Matrícula”)
+app.get("/search", (req, res) => {
+  try {
+    const q = String(req.query.matricula || "").toUpperCase().trim();
+    if (!MAT.test(q)) return res.status(400).json({ error: "Formato AAA1234" });
 
     const db = dbConn();
+    const p = db.prepare("SELECT * FROM players WHERE matricula = ?").get(q);
+    if (!p) return res.status(404).json({ error: "No existe esa matrícula" });
+
+    return res.json({ ok: true, matricula: q, player: p });
+  } catch (e) {
+    console.error("search error:", e);
+    return res.status(500).json({ error: "search_failed" });
+  }
+});
+
+// Ranking global sencillo y estable (paginado)
+// Devuelve mock de contadores a 0 si tu tabla aún no tiene esos campos.
+app.get("/ranking", (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || "20", 10), 50);
+    const offset = parseInt(req.query.offset || "0", 10);
+
+    const db = dbConn();
+    // Si ya tienes una columna "points" puedes ordenar por ella.
+    // Aquí uso rowid DESC como ejemplo neutro.
     const stmt = db.prepare(
-      'SELECT matricula, username FROM players ORDER BY rowid DESC LIMIT ? OFFSET ?'
+      "SELECT matricula, username, role FROM players ORDER BY rowid DESC LIMIT ? OFFSET ?"
     );
     const rows = stmt.all(limit, offset);
 
-    // Formato que espera el front
-    const items = rows.map(r => ({
+    const items = rows.map((r) => ({
       matricula: r.matricula,
-      username:  r.username,
-      points:    0,
-      posts:     0,
-      ciertos:   0,
-      falsos:    0,
-      comments:  0,
+      username: r.username,
+      role: r.role || null,
+      points: 0,
+      posts: 0,
+      ciertos: 0,
+      falsos: 0,
+      comments: 0,
     }));
 
-    res.json({ items, limit, offset });
+    return res.json({ items, limit, offset });
   } catch (e) {
-    console.error('ranking error:', e);
-    res.status(500).json({ error: 'ranking_failed' });
+    console.error("ranking error:", e);
+    return res.status(500).json({ error: "ranking_failed" });
   }
 });
 
-// Search
-app.get("/search",(req,res)=>{ const q=String(req.query.matricula||"").toUpperCase().trim();
-  if(!MAT.test(q)) return res.status(400).json({error:"Formato AAA1234"});
-  const db=dbConn(); const p=db.prepare("SELECT * FROM players WHERE matricula=?").get(q);
-  if(!p) return res.status(404).json({error:"No existe esa matrícula"}); res.json({ok:true,matricula:q});
-});
+// Healthcheck
+app.get("/", (_req, res) => res.json({ ok: true, time: nowISO() }));
 
-// Health
-app.get("/",(_req,res)=>res.json({ok:true,time:new Date().toISOString()}));
-app.listen(process.env.PORT||8080,()=>console.log("API ON"));
+// -------------------- LISTEN --------------------
+app.listen(process.env.PORT || 8080, () => console.log("API ON"));

@@ -58,3 +58,14 @@ CREATE TABLE IF NOT EXISTS reports (
   created_date TEXT DEFAULT (datetime('now')),
   UNIQUE(post_id, reporter_matricula)
 );
+-- schema.sql
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY,
+  email TEXT UNIQUE,
+  username TEXT,
+  role TEXT,                 -- 'player' | 'fan'
+  matricula TEXT UNIQUE,     -- AAA1234
+  created_at TEXT DEFAULT (DATETIME('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_matricula ON users(matricula);
