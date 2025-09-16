@@ -15,6 +15,14 @@ function dbConn() { const db = new Database(DB_PATH); db.pragma("journal_mode = 
 const nowISO = () => new Date().toISOString();
 const safeCats = ["LOCAL","PROVINCIAL","AUTONOMICA","3_DIVISION","2_DIVISION_B","2_DIVISION","PRIMERA_DIVISION","SELECCION_ESPAÑOLA"];
 
+// --- helper para generar matrículas tipo AAA1234 ---
+function genMatricula() {
+  const letras = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const pick = (n, s) => Array.from({ length: n }, () => s[Math.floor(Math.random() * s.length)]).join("");
+  return pick(3, letras) + String(Math.floor(1000 + Math.random() * 9000));
+}
+
+
 if (process.argv.includes("--init")) {
   const db = dbConn(); const schema = fs.readFileSync("./schema.sql","utf8"); db.exec(schema);
   console.log("DB inicializada ✅"); process.exit(0);
@@ -32,6 +40,50 @@ app.post("/players/sync",(req,res)=>{
 app.get("/players/:matricula",(req,res)=>{ const m=(req.params.matricula||"").toUpperCase();
   const db=dbConn(); const p=db.prepare("SELECT * FROM players WHERE matricula=?").get(m);
   if(!p) return res.status(404).json({error:"No existe"}); p.categories=JSON.parse(p.categories||"[]"); res.json(p);
+});
+
+// --- Registro inicial: crea perfil + matrícula única ---
+app.post("/register", (req, res) => {
+  try {
+    const { role, username = "" } = req.body || {};
+    const valid = role === "player" || role === "fan";
+    if (!valid) return res.status(400).json({ error: "invalid_role" });
+
+    const db = dbConn();
+
+    // Tabla de rol (no rompe si ya existe)
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS user_roles (' +
+      ' matricula TEXT PRIMARY KEY,' +
+      ' role TEXT CHECK(role IN ("player","fan"))' +
+      ')'
+    );
+
+    // Generar matrícula única
+    let matricula, exists, tries = 0;
+    do {
+      matricula = genMatricula(); // usa el helper del Paso 1
+      exists = db.prepare("SELECT 1 FROM players WHERE matricula=?").get(matricula);
+    } while (exists && ++tries < 25);
+
+    if (exists) return res.status(500).json({ error: "matricula_collision" });
+
+    // Crear jugador base (sin categorías al inicio)
+    const cats = JSON.stringify([]);
+    db.prepare(
+      "INSERT INTO players(matricula, username, categories) VALUES (?,?,?)"
+    ).run(matricula, username, cats);
+
+    // Guardar rol
+    db.prepare(
+      "INSERT OR REPLACE INTO user_roles(matricula, role) VALUES (?,?)"
+    ).run(matricula, role);
+
+    return res.json({ ok: true, matricula, role });
+  } catch (e) {
+    console.error("register error:", e);
+    return res.status(500).json({ error: "register_failed" });
+  }
 });
 
 // Friendships (+1 social)
